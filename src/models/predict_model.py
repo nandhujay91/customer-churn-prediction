@@ -9,6 +9,7 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from data.make_dataset import clean_data
+from data.validate import validate_input_data
 
 
 def align_columns(df_encoded: pd.DataFrame, reference_columns: list) -> pd.DataFrame:
@@ -36,7 +37,6 @@ def prepare_features(df_raw: pd.DataFrame, scaler, reference_columns: list) -> p
     df_encoded = pd.get_dummies(df_clean, columns=categorical_cols, drop_first=True)
     df_aligned = align_columns(df_encoded, reference_columns)
 
-    # Only scale numeric columns that exist in both
     numeric_cols_present = [c for c in numeric_cols if c in df_aligned.columns]
     df_aligned[numeric_cols_present] = scaler.transform(df_aligned[numeric_cols_present])
 
@@ -69,6 +69,10 @@ def main(input_filepath, output_filepath, model_path, scaler_path, reference_pat
     logger.info(f"Loading new data from {input_filepath}")
     df_raw = pd.read_csv(input_filepath)
     logger.info(f"Loaded {len(df_raw)} customers")
+
+    logger.info("Validating input data...")
+    validate_input_data(df_raw)
+    logger.info("Input data passed validation")
 
     X_new = prepare_features(df_raw, scaler, reference_columns)
 

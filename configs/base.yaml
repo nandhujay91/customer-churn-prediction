@@ -1,7 +1,11 @@
-﻿data:
-  raw_path: data/raw
-  processed_path: data/processed
+data:
+  raw_path: data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv
+  cleaned_path: data/processed/churn_cleaned.csv
+  processed_dir: data/processed
 
 model:
-  name: churn_baseline_model
-  random_state: 42
+  output_dir: models
+  cost_fn: 500
+  cost_fp: 100
+
+random_state: 42

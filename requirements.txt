@@ -11,6 +11,7 @@ xgboost
 matplotlib
 seaborn
 joblib
+pyyaml
 
 # dev/test tools
 pytest

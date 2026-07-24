@@ -5,6 +5,7 @@ import click
 import joblib
 import numpy as np
 import pandas as pd
+import yaml
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -17,8 +18,13 @@ from sklearn.metrics import (
 from xgboost import XGBClassifier
 
 
+def load_config(config_path="configs/base.yaml"):
+    """Load pipeline configuration from YAML."""
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
 def evaluate_model(name, y_test, preds, probs):
-    """Return a metrics dict for given predictions and probabilities."""
     return {
         "model": name,
         "accuracy": accuracy_score(y_test, preds),
@@ -30,42 +36,43 @@ def evaluate_model(name, y_test, preds, probs):
 
 
 def expected_cost(y_test, preds, cost_fn, cost_fp):
-    """Total business cost for a set of predictions.
-
-    cost_fn: cost of missing a real churner (lost customer)
-    cost_fp: cost of a wasted retention offer on a non-churner
-    """
     _tn, fp, fn, _tp = confusion_matrix(y_test, preds).ravel()
     return fn * cost_fn + fp * cost_fp
 
 
 def find_min_cost_threshold(y_test, probs, cost_fn, cost_fp):
-    """Search thresholds and return the one with the lowest total business cost."""
     best_threshold = 0.5
     best_cost = float("inf")
-
     for threshold in np.arange(0.05, 0.95, 0.01):
         preds = (probs >= threshold).astype(int)
         cost = expected_cost(y_test, preds, cost_fn, cost_fp)
         if cost < best_cost:
             best_cost = cost
             best_threshold = threshold
-
     return best_threshold, best_cost
 
 
 @click.command()
-@click.argument("data_dir", type=click.Path(exists=True))
-@click.argument("output_dir", type=click.Path())
-@click.option("--cost-fn", default=500.0, help="Cost of missing a real churner ($)")
-@click.option("--cost-fp", default=50.0, help="Cost of a wasted retention offer ($)")
-def main(data_dir, output_dir, cost_fn, cost_fp):
-    """Train models, pick decision threshold by minimum business cost, save the best."""
-    logger = logging.getLogger(__name__)
-    data_dir = Path(data_dir)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+@click.option("--config-path", default="configs/base.yaml", help="Path to config YAML")
+@click.option("--data-dir", default=None, help="Override: processed data directory")
+@click.option("--output-dir", default=None, help="Override: model output directory")
+@click.option("--cost-fn", default=None, type=float, help="Override: cost of a missed churner")
+@click.option("--cost-fp", default=None, type=float, help="Override: cost of a wasted offer")
+def main(config_path, data_dir, output_dir, cost_fn, cost_fp):
+    """Train models, pick decision threshold by minimum business cost, save the best.
 
+    All parameters default to configs/base.yaml but can be overridden via CLI flags.
+    """
+    logger = logging.getLogger(__name__)
+    config = load_config(config_path)
+
+    data_dir = Path(data_dir or config["data"]["processed_dir"])
+    output_dir = Path(output_dir or config["model"]["output_dir"])
+    cost_fn = cost_fn if cost_fn is not None else config["model"]["cost_fn"]
+    cost_fp = cost_fp if cost_fp is not None else config["model"]["cost_fp"]
+    random_state = config.get("random_state", 42)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Cost assumptions: false negative=${cost_fn:.0f}, false positive=${cost_fp:.0f}")
 
     X_train = pd.read_csv(data_dir / "X_train.csv")
@@ -75,14 +82,12 @@ def main(data_dir, output_dir, cost_fn, cost_fp):
 
     candidates = {}
 
-    # --- Logistic Regression (class-weighted) ---
     logger.info("Training Logistic Regression (class-weighted)...")
-    log_reg = LogisticRegression(max_iter=1000, random_state=42, class_weight="balanced")
+    log_reg = LogisticRegression(max_iter=1000, random_state=random_state, class_weight="balanced")
     log_reg.fit(X_train, y_train)
     lr_probs = log_reg.predict_proba(X_test)[:, 1]
     candidates["LogisticRegression"] = (log_reg, lr_probs)
 
-    # --- XGBoost (class-weighted) ---
     logger.info("Training XGBoost (class-weighted)...")
     pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
     xgb = XGBClassifier(
@@ -90,14 +95,13 @@ def main(data_dir, output_dir, cost_fn, cost_fp):
         max_depth=4,
         learning_rate=0.1,
         eval_metric="logloss",
-        random_state=42,
+        random_state=random_state,
         scale_pos_weight=pos_weight,
     )
     xgb.fit(X_train, y_train)
     xgb_probs = xgb.predict_proba(X_test)[:, 1]
     candidates["XGBoost"] = (xgb, xgb_probs)
 
-    # --- For each model: default threshold + cost-optimal threshold ---
     results = []
     saved_candidates = {}
 
@@ -126,7 +130,6 @@ def main(data_dir, output_dir, cost_fn, cost_fp):
     logger.info("\n" + results_df.to_string())
     results_df.to_csv(output_dir / "model_comparison.csv")
 
-    # --- Pick the overall lowest-cost model+threshold combo ---
     best_name = results_df["total_cost"].idxmin()
     best_model, best_thresh, best_cost = saved_candidates[best_name]
 

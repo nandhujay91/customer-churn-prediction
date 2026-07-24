@@ -4,6 +4,8 @@ from pathlib import Path
 
 import click
 import joblib
+import mlflow
+import mlflow.sklearn
 import numpy as np
 import pandas as pd
 import yaml
@@ -60,8 +62,7 @@ def find_min_cost_threshold(y_test, probs, cost_fn, cost_fp):
 @click.option("--cost-fp", default=None, type=float, help="Override: cost of a wasted offer")
 def main(config_path, data_dir, output_dir, cost_fn, cost_fp):
     """Train models, pick decision threshold by minimum business cost, save the best.
-
-    All parameters default to configs/base.yaml but can be overridden via CLI flags.
+    Every run is logged to MLflow (metrics, params, model artifact).
     """
     logger = logging.getLogger("train_model")
     config = load_config(config_path)
@@ -75,6 +76,9 @@ def main(config_path, data_dir, output_dir, cost_fn, cost_fp):
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Cost assumptions: false negative=${cost_fn:.0f}, false positive=${cost_fp:.0f}")
 
+    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    mlflow.set_experiment("customer_churn_prediction")
+
     X_train = pd.read_csv(data_dir / "X_train.csv")
     X_test = pd.read_csv(data_dir / "X_test.csv")
     y_train = pd.read_csv(data_dir / "y_train.csv").squeeze()
@@ -82,68 +86,90 @@ def main(config_path, data_dir, output_dir, cost_fn, cost_fp):
 
     candidates = {}
 
-    logger.info("Training Logistic Regression (class-weighted)...")
-    log_reg = LogisticRegression(max_iter=1000, random_state=random_state, class_weight="balanced")
-    log_reg.fit(X_train, y_train)
-    lr_probs = log_reg.predict_proba(X_test)[:, 1]
-    candidates["LogisticRegression"] = (log_reg, lr_probs)
+    with mlflow.start_run(run_name="train_and_compare"):
+        mlflow.log_param("cost_fn", cost_fn)
+        mlflow.log_param("cost_fp", cost_fp)
+        mlflow.log_param("random_state", random_state)
 
-    logger.info("Training XGBoost (class-weighted)...")
-    pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
-    xgb = XGBClassifier(
-        n_estimators=200,
-        max_depth=4,
-        learning_rate=0.1,
-        eval_metric="logloss",
-        random_state=random_state,
-        scale_pos_weight=pos_weight,
-    )
-    xgb.fit(X_train, y_train)
-    xgb_probs = xgb.predict_proba(X_test)[:, 1]
-    candidates["XGBoost"] = (xgb, xgb_probs)
-
-    results = []
-    saved_candidates = {}
-
-    for name, (model, probs) in candidates.items():
-        default_preds = (probs >= 0.5).astype(int)
-        default_cost = expected_cost(y_test, default_preds, cost_fn, cost_fp)
-        row = evaluate_model(f"{name} (threshold=0.50)", y_test, default_preds, probs)
-        row["total_cost"] = default_cost
-        results.append(row)
-        saved_candidates[f"{name} (threshold=0.50)"] = (model, 0.5, default_cost)
-
-        best_thresh, best_cost = find_min_cost_threshold(y_test, probs, cost_fn, cost_fp)
-        best_preds = (probs >= best_thresh).astype(int)
-        row = evaluate_model(
-            f"{name} (threshold={best_thresh:.2f}, cost-optimal)", y_test, best_preds, probs
+        logger.info("Training Logistic Regression (class-weighted)...")
+        log_reg = LogisticRegression(
+            max_iter=1000, random_state=random_state, class_weight="balanced"
         )
-        row["total_cost"] = best_cost
-        results.append(row)
-        saved_candidates[f"{name} (threshold={best_thresh:.2f}, cost-optimal)"] = (
-            model,
-            best_thresh,
-            best_cost,
+        log_reg.fit(X_train, y_train)
+        lr_probs = log_reg.predict_proba(X_test)[:, 1]
+        candidates["LogisticRegression"] = (log_reg, lr_probs)
+
+        logger.info("Training XGBoost (class-weighted)...")
+        pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+        xgb = XGBClassifier(
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.1,
+            eval_metric="logloss",
+            random_state=random_state,
+            scale_pos_weight=pos_weight,
         )
+        xgb.fit(X_train, y_train)
+        xgb_probs = xgb.predict_proba(X_test)[:, 1]
+        candidates["XGBoost"] = (xgb, xgb_probs)
 
-    results_df = pd.DataFrame(results).set_index("model")
-    logger.info("\n" + results_df.to_string())
-    results_df.to_csv(output_dir / "model_comparison.csv")
+        results = []
+        saved_candidates = {}
 
-    best_name = results_df["total_cost"].idxmin()
-    best_model, best_thresh, best_cost = saved_candidates[best_name]
+        for name, (model, probs) in candidates.items():
+            default_preds = (probs >= 0.5).astype(int)
+            default_cost = expected_cost(y_test, default_preds, cost_fn, cost_fp)
+            row = evaluate_model(f"{name} (threshold=0.50)", y_test, default_preds, probs)
+            row["total_cost"] = default_cost
+            results.append(row)
+            saved_candidates[f"{name} (threshold=0.50)"] = (model, 0.5, default_cost)
 
-    joblib.dump(
-        {"model": best_model, "threshold": best_thresh, "cost_fn": cost_fn, "cost_fp": cost_fp},
-        output_dir / "best_model.joblib",
-    )
-    logger.info(f"Best model (lowest business cost): {best_name}")
-    logger.info(f"  Total cost on test set: ${best_cost:,.0f}")
-    logger.info(
-        f"  Recall={results_df.loc[best_name, 'recall']:.4f}, "
-        f"Precision={results_df.loc[best_name, 'precision']:.4f}"
-    )
-    logger.info(f"Saved to {output_dir / 'best_model.joblib'}")
+            best_thresh, best_cost = find_min_cost_threshold(y_test, probs, cost_fn, cost_fp)
+            best_preds = (probs >= best_thresh).astype(int)
+            row2 = evaluate_model(
+                f"{name} (threshold={best_thresh:.2f}, cost-optimal)", y_test, best_preds, probs
+            )
+            row2["total_cost"] = best_cost
+            results.append(row2)
+            saved_candidates[f"{name} (threshold={best_thresh:.2f}, cost-optimal)"] = (
+                model,
+                best_thresh,
+                best_cost,
+            )
+
+            safe_name = name.lower()
+            mlflow.log_metric(f"{safe_name}_default_recall", row["recall"])
+            mlflow.log_metric(f"{safe_name}_default_cost", default_cost)
+            mlflow.log_metric(f"{safe_name}_optimal_recall", row2["recall"])
+            mlflow.log_metric(f"{safe_name}_optimal_cost", best_cost)
+            mlflow.log_metric(f"{safe_name}_optimal_threshold", best_thresh)
+
+        results_df = pd.DataFrame(results).set_index("model")
+        logger.info("\n" + results_df.to_string())
+        results_df.to_csv(output_dir / "model_comparison.csv")
+        mlflow.log_artifact(str(output_dir / "model_comparison.csv"))
+
+        best_name = results_df["total_cost"].idxmin()
+        best_model, best_thresh, best_cost = saved_candidates[best_name]
+
+        mlflow.log_param("best_model", best_name)
+        mlflow.log_metric("best_total_cost", best_cost)
+        mlflow.log_metric("best_recall", results_df.loc[best_name, "recall"])
+        mlflow.log_metric("best_precision", results_df.loc[best_name, "precision"])
+        mlflow.sklearn.log_model(best_model, "best_model")
+
+        joblib.dump(
+            {"model": best_model, "threshold": best_thresh, "cost_fn": cost_fn, "cost_fp": cost_fp},
+            output_dir / "best_model.joblib",
+        )
+        logger.info(f"Best model (lowest business cost): {best_name}")
+        logger.info(f"  Total cost on test set: ${best_cost:,.0f}")
+        logger.info(
+            f"  Recall={results_df.loc[best_name, 'recall']:.4f}, "
+            f"Precision={results_df.loc[best_name, 'precision']:.4f}"
+        )
+        logger.info(f"Saved to {output_dir / 'best_model.joblib'}")
+        logger.info("Run logged to MLflow -- view with: python -m mlflow ui")
 
 
 if __name__ == "__main__":

@@ -17,3 +17,4 @@ pyyaml
 pytest
 ruff
 pre-commit
+mlflow

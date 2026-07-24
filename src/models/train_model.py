@@ -1,4 +1,5 @@
 import logging
+import sys
 from pathlib import Path
 
 import click
@@ -19,7 +20,6 @@ from xgboost import XGBClassifier
 
 
 def load_config(config_path="configs/base.yaml"):
-    """Load pipeline configuration from YAML."""
     with open(config_path) as f:
         return yaml.safe_load(f)
 
@@ -63,7 +63,7 @@ def main(config_path, data_dir, output_dir, cost_fn, cost_fp):
 
     All parameters default to configs/base.yaml but can be overridden via CLI flags.
     """
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("train_model")
     config = load_config(config_path)
 
     data_dir = Path(data_dir or config["data"]["processed_dir"])
@@ -147,6 +147,8 @@ def main(config_path, data_dir, output_dir, cost_fn, cost_fp):
 
 
 if __name__ == "__main__":
-    log_fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.INFO, format=log_fmt)
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from utils import setup_logging
+
+    setup_logging("train_model")
     main()

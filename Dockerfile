@@ -1,4 +1,4 @@
-# ---- Build stage ----
+# ---- Stage 1: Builder ----
 FROM cgr.dev/chainguard/python:latest-dev AS builder
 
 WORKDIR /app
@@ -9,14 +9,28 @@ COPY configs/ ./configs/
 
 RUN pip install --no-cache-dir --target=/app/deps -r requirements.txt
 
-# ---- Runtime stage ----
-FROM cgr.dev/chainguard/python:latest
+# ---- Stage 2: Test ----
+FROM builder AS test
+
+ENV PYTHONPATH=/app/deps:/app/src
+
+COPY tests/ ./tests/
+COPY data/raw/ ./data/raw/
+
+RUN pip install --no-cache-dir --target=/app/deps pytest ruff
+RUN PYTHONPATH=/app/deps python -m pytest tests/ -v
+RUN PYTHONPATH=/app/deps python -m ruff check src/
+
+# ---- Stage 3: Runtime ----
+FROM cgr.dev/chainguard/python:latest AS runtime
 
 WORKDIR /app
 
-COPY --from=builder /app/deps /app/deps
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/configs ./configs
+# Depends on the "test" stage completing successfully first —
+# if tests fail, this stage is never reached and the build fails.
+COPY --from=test /app/deps /app/deps
+COPY --from=test /app/src ./src
+COPY --from=test /app/configs ./configs
 
 ENV PYTHONPATH=/app/deps:/app/src
 

@@ -35,7 +35,7 @@ def expected_cost(y_test, preds, cost_fn, cost_fp):
     cost_fn: cost of missing a real churner (lost customer)
     cost_fp: cost of a wasted retention offer on a non-churner
     """
-    tn, fp, fn, tp = confusion_matrix(y_test, preds).ravel()
+    _tn, fp, fn, _tp = confusion_matrix(y_test, preds).ravel()
     return fn * cost_fn + fp * cost_fp
 
 

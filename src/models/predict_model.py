@@ -1,11 +1,10 @@
 import logging
+import sys
 from pathlib import Path
 
 import click
 import joblib
 import pandas as pd
-
-import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 

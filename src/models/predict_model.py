@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from data.make_dataset import clean_data
 from data.validate import validate_input_data
+from monitoring import check_drift
 
 
 def align_columns(df_encoded: pd.DataFrame, reference_columns: list) -> pd.DataFrame:
@@ -73,6 +74,20 @@ def main(input_filepath, output_filepath, model_path, scaler_path, reference_pat
     logger.info("Validating input data...")
     validate_input_data(df_raw)
     logger.info("Input data passed validation")
+
+    baseline_path = "models/baseline_stats.json"
+    if Path(baseline_path).exists():
+        logger.info("Checking for data drift against training baseline...")
+        drift_results = check_drift(df_raw, baseline_path)
+        n_drifted = sum(1 for r in drift_results.values() if r["drifted"])
+        if n_drifted > 0:
+            logger.warning(
+                f"Drift detected in {n_drifted} column(s) -- consider reviewing model performance"
+            )
+        else:
+            logger.info("No significant drift detected")
+    else:
+        logger.info("No baseline stats found; skipping drift check")
 
     X_new = prepare_features(df_raw, scaler, reference_columns)
 

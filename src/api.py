@@ -71,8 +71,8 @@ class CustomerData(BaseModel):
     MonthlyCharges: float
     TotalCharges: str
 
-    class Config:
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "gender": "Female",
                 "SeniorCitizen": 0,
@@ -95,6 +95,7 @@ class CustomerData(BaseModel):
                 "TotalCharges": "1020.5",
             }
         }
+    }
 
 
 class PredictionResponse(BaseModel):

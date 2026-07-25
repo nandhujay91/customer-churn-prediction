@@ -18,3 +18,5 @@ pytest
 ruff
 pre-commit
 mlflow
+fastapi
+uvicorn

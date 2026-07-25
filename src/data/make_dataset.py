@@ -22,7 +22,8 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     if "customerID" in df.columns:
         df = df.drop(columns=["customerID"])
 
-    df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
+    if "Churn" in df.columns:
+        df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
 
     return df
 
